@@ -1,6 +1,7 @@
 import java.util.Date
 import config.Config
 import service.DataBase
+import service.RandomForestWithBalance
 import java.io._
 import org.apache.log4j.{Level, LogManager, Logger}
 import org.apache.spark.{SparkConf, SparkContext}
@@ -17,8 +18,6 @@ import org.apache.spark.mllib.regression.LabeledPoint
 import org.apache.spark.mllib.linalg.{SparseVector, DenseVector,Vectors}
 import org.apache.spark.mllib.stat.KernelDensity
 import scala.collection.mutable.ArrayBuffer
-
-
 
 object analisis {
 
@@ -94,7 +93,7 @@ def main(args: Array[String]) {
 // parser.parse returns Option[C]
   parser.parse(args, Config()) match {
   case Some(config) =>
-     val logger= LogManager.getLogger("analisis")
+     val logger= LogManager.getLogger("AnalisisP2P_balanced")
      logger.setLevel(Level.INFO)
      logger.setLevel(Level.DEBUG)
      Logger.getLogger("org").setLevel(Level.WARN)
@@ -126,7 +125,7 @@ def main(args: Array[String]) {
      for (a <- grid) println(a)
      //Begin the analysis
      logger.info("Solicitando recursos a Spark")
-     val conf = new SparkConf().setAppName("AnalisisP2P")
+     val conf = new SparkConf().setAppName("AnalisisP2P_balanced")
      .set("spark.executor.memory",memex)
      .set("spark.yarn.executor.memoryOverhead", memover)
      val sc = new SparkContext(conf)
@@ -150,8 +149,7 @@ def main(args: Array[String]) {
     for (params <- grid )
     {
      for( a <- 1 to k){
-      logger.info("..........inicinando ciclo con un valor de trees..............."+ params._1)
-      println("using(trees,impurity,depth, bins) " + params)
+      logger.info("............using(impurity,depth, bins)............. " + params)
       val Array(trainingData, testData) = labeledDF.randomSplit(Array(0.7, 0.3))
 
       // creation of the model
@@ -159,25 +157,25 @@ def main(args: Array[String]) {
         if (est=="balanced") {
           new RandomForestWithBalance(trainingData,
             params,numPartitions,featureIndexer,
-            Array(1.0,-1.0),sqlContext,sc)
+            Array(1.0,-1.0),sqlContext)
         } else{
         new RandomForestWithBalance(trainingData,
           params,numPartitions,featureIndexer,
-          Array(1.0,-1.0),sqlContext,sc)
+          Array(1.0,-1.0),sqlContext)
         }
      }
      // training the model
      model.training()
      // getting the features importances
-     val importances=model.featureImportances.toArray
+     val importances=""//model.featureImportances.toArray
      val numTrees=model.getNumTrees
      //
-     textOut2=(textOut2 + params + "," + importances.mkString(", ") + "\n" )
+     //textOut2=(textOut2 + params + "," + importances.mkString(", ") + "\n" )
      textOut3=(textOut3 + "---Learned classification tree ensemble model with"
       + params + ",trees="+ numTrees + "\n" + model.toDebugString + "\n")
      logger.info("..........Testing...............")
      // Make predictions.
-     var predictions = model.getPredictions(testData)
+     var predictions = model.getPredictions(testData,sc)
      logger.info("..........Calculate Error on test...............")
      predictions.persist()
      var predRow: RDD[Row]=predictions.select("label", "predictedLabel").rdd
@@ -199,11 +197,11 @@ def main(args: Array[String]) {
      predictions.unpersist()
      logger.info("..........Calculate Error on Training...............")
      // Make predictions.
-     predictions = model.getPredictions(testData)
+     predictions = model.getPredictions(trainingData,sc)
      predictions.persist()
      //TODO: define a Class for the metrics
      predRow = predictions.select("label", "predictedLabel").rdd
-     predRDD = (predRow.map(row=>{(row.getDouble(0), row.getString(1).toDouble)}))
+     predRDD = (predRow.map(row=>{(row.getDouble(0), row.getDouble(1).toDouble)}))
      tp=predRDD.filter(r=>r._1== 1.0 && r._2==1.0).count().toDouble
      fn=predRDD.filter(r=>r._1== 1.0 && r._2== -1.0).count().toDouble
      tn=predRDD.filter(r=>r._1== -1.0 && r._2== -1.0).count().toDouble
@@ -268,33 +266,9 @@ case None =>
 /*Aqui!!!!!!!!!!!!!!!!!!!!!!
 
 
+nohup spark-submit --driver-memory 10g --class "analisis" AnalisisP2P_Balanced-assembly-1.0.jar -i variables_finales_tarjeta -p 200 -h 1000 -m 9000m -r 0 -o balanced_test -e balanced -k 4 -i gini,entropy -d 10,20,30 -b 32,128 -a -25,25 > balanced_test_log 2>&1&
 
-spark-submit --driver-memory 4g --class "analisis" AnalisisP2P-assembly-1.0.jar -i base_tarjeta -p 500 -h 1000 -m 13500m -r 1 -o testrf1 -e rfpure -k 1 -t 50 -i gini,entropy -d 30 -b 72
-
-spark-submit --driver-memory 4g --class "analisis" AnalisisP2P-assembly-1.0.jar -i base_tarjeta -p 100 -h 1000 -m 13500m -r 1 -o testrf1 -e rfpure -k 1 -t 50 -i gini -d 30 -b 32
-spark-submit --driver-memory 4g --class "analisis" AnalisisP2P-assembly-1.0.jar -i base_tarjeta_complete -p 100 -h 1000 -m 13500m -r 1 -o testrf1 -e rfpure -k 1 -t 25 -i gini -d 30 -b 32
-
-spark-submit --driver-memory 4g --class "analisis" AnalisisP2P-assembly-1.0.jar -i variables_finales_tarjeta -p 200 -h 1000 -m 13500m -r 1 -o rf1 -e rfpure -k 5 -t 1,10,25,50,100 -i gini,entropy -d 10,20,32 -b 32,72
-
-spark-submit --driver-memory 4g --class "analisis" AnalisisP2P-assembly-1.0.jar -i variables_finales_tarjeta -p 200 -h 1000 -m 13500m -r 1 -o test1 -e rfpure -k 4 -t 1,10,25,50,100 -i gini,entropy -d 10,20,30 -b 32,72
-
-
-spark-submit --master yarn --deploy-mode cluster --driver-memory 1g --class "analisis" AnalisisP2P-assembly-1.0.jar -i variables_finales_tarjeta -p 200 -h 1000 -m 10000m -r 1 -o p1 -e rfpure -k 4 -t 1,10,25,50,100 -i gini,entropy -d 10,20,30 -b 32,72
-
-spark-submit --driver-memory 1g --class "analisis" AnalisisP2P-assembly-1.0.jar -i variables_finales_tarjeta -p 200 -h 1000 -m 10000m -r 1 -o p1 -e rfpure -k 4 -t 1,10,25,50,100 -i gini,entropy -d 10,20,30 -b 32,72
-
-nohup spark-submit a.py > archivo_salida 2>&1&
-nohup spark-submit --class "analisis" AnalisisP2P-assembly-1.0.jar -i variables_finales_tarjeta -p 200 -h 1000 -m 10000m -r 1 -o p1 -e rfpure -k 4 -t 1,10,25,50,100 -i gini,entropy -d 10,20,30 -b 32,72 -a -30,30 > archivo_salida 2>&1&
-
-
-nohup spark-submit --driver-memory 6g --class "analisis" AnalisisP2P-assembly-1.0.jar -i variables_finales_tarjeta -p 200 -h 1000 -m 10000m -r 0 -o p1 -e rfpure -k 4 -t 25,50,100 -i gini,entropy -d 10,20,30 -b 32,72 -a -25,25 > archivo_salida 2>&1&
-nohup spark-submit --driver-memory 10g --class "analisis" AnalisisP2P-assembly-1.0.jar -i variables_finales_tarjeta -p 200 -h 1000 -m 12000m -r 0 -o p1 -e rfpure -k 4 -t 100 -i gini,entropy -d 10,20,30 -b 32,72 -a -25,25 > archivo_salida 2>&1&
-
-nohup spark-submit --num-executors 2 --driver-memory 10g --class "analisis" AnalisisP2P-assembly-1.0.jar -i variables_finales_tarjeta -p 200 -h 1000 -m 12000m -r 0 -o p1 -e rfpure -k 4 -t 2 -i gini,entropy -d 10,20,30 -b 32,72 -a -25,25 > archivo_salida 2>&1&
-
-nohup spark-submit --num-executors 3 --driver-memory 10g --class "analisis" AnalisisP2P-assembly-1.0.jar -i variables_finales_tarjeta -p 200 -h 1000 -m 12000m -r 0 -o pbinhigh -e rfpure -k 4 -t 1,2,25,100 -i gini,entropy -d 30 -b 128,384 -a -25,25 > archivo_salida 2>&1&
-
-
+spark-submit --verbose --driver-memory 10g --class "analisis" AnalisisP2P_Balanced-assembly-1.0.jar -i variables_finales_tarjeta -p 200 -h 1000 -m 10000m -r 0 -o balanced -e balanced -k 4 -i gini,entropy -d 10,20,30 -b 100 -a -25,25
 
 opt[String]('i', "in").action( (x, c) =>
 c.copy(in = x) ).text("base table")

@@ -1,4 +1,4 @@
-name := "AnalisisP2P_Balanced”
+name := "AnalisisP2P_Balanced"
 version := "1.0"
 scalaVersion := "2.10.5"
 resolvers += Resolver.sonatypeRepo("public")
