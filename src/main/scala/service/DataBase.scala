@@ -13,7 +13,6 @@ import org.apache.spark.ml.feature.{IndexToString, StringIndexer, VectorIndexer,
 import org.apache.spark.mllib.linalg.{SparseVector, DenseVector,Vectors}
 import org.apache.spark.mllib.regression.LabeledPoint
 
-
 class DataBase(tableBase: String,  numP:Int, sqlContext: SQLContext, filters: String) extends Serializable {
 
   private val cols="""idn,resp_code,label,fraude,nolabel,monto,valida_cifin,confiabilidad_documento,first_tarjeta,
@@ -83,7 +82,7 @@ class DataBase(tableBase: String,  numP:Int, sqlContext: SQLContext, filters: St
 
   def getDataFrameLabeledLegalFraud(preCal:Boolean):DataFrame={
     val tName=tableBase+"_labeled"
-    val base=dataFrameBase.where("label!=0")
+    val base=dataFrameBase.where("label!=0").where("resp_code=1 or resp_code=2")
     val names = base.columns
     val lon=names.length
     // se definen os atributos que no son variables
