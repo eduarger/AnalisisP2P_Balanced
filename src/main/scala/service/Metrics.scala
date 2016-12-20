@@ -14,7 +14,22 @@ import org.apache.spark.mllib.linalg.{SparseVector, DenseVector,Vectors}
 import org.apache.spark.mllib.regression.LabeledPoint
 
 
-class Metrics(dataSet: DataFrame) extends Serializable {
-
+class Metrics(dataSet: DataFrame, labels:Array[Double]) extends Serializable {
+  val labelPos=labels(0)
+  val labelNeg=labels(1)
+  val predRow: RDD[Row]=dataSet.select("label", "predictedLabel").rdd
+  val predRDD: RDD[(Double, Double)] = (predRow.map(row=>{(row.getDouble(0), row.getDouble(1).toDouble)}))
+  val tp=predRDD.filter(r=>r._1== labelPos && r._2==labelPos).count().toDouble
+  val fn=predRDD.filter(r=>r._1== labelPos && r._2== labelNeg).count().toDouble
+  val tn=predRDD.filter(r=>r._1== labelNeg && r._2== labelNeg).count().toDouble
+  val fp=predRDD.filter(r=>r._1== labelNeg && r._2== labelPos).count().toDouble
+  val sens = (tp/(tp+fn))*100.0
+  val spc = (tn/(fp+tn))*100.0
+  val pre= (tp/(tp+fp))*100.0
+  val acc= ((tp+tn)/(tp+fn+fp+tn))*100.0
+  val f1= ((2*pre*sens)/(pre+sens))
+  val mGeo=math.sqrt(sens*spc)
+  val pExc=(tp*tn-fn*fp)/((fn+tp)*(tn+fp))
+  val MCC=(tp*tn-fp*fn)/math.sqrt((fn+tp)*(tn+fp)*(fp+tp)*(fn+tn))
 
 }

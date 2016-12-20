@@ -61,6 +61,7 @@ class DataBase(tableBase: String,  numP:Int, sqlContext: SQLContext, filters: St
       sqlContext.sql(query).where(filters).coalesce(numP)
     }
   private val logger = LogManager.getLogger("DataBase")
+  private var namesCol: Array[String]=Array[String]()
 
 
   def getDataFrame():DataFrame={
@@ -90,6 +91,8 @@ class DataBase(tableBase: String,  numP:Int, sqlContext: SQLContext, filters: St
     val assembler = (new VectorAssembler()
     .setInputCols( for (i <- names if !(ignore contains i )) yield i)
     .setOutputCol("features"))
+    //set the names col
+    namesCol=assembler.getInputCols
     val retorno={
       if(preCal){
         logger.info("........Reading  "+tName +"..............")
@@ -111,6 +114,10 @@ class DataBase(tableBase: String,  numP:Int, sqlContext: SQLContext, filters: St
    }
   }
   retorno
+}
+
+def getNamesCol():Array[String]={
+  namesCol
 }
 
 }
