@@ -12,6 +12,8 @@ import org.apache.spark.sql.Row
 import org.apache.spark.ml.feature.{IndexToString, StringIndexer, VectorIndexer, StringIndexerModel, VectorIndexerModel,VectorAssembler}
 import org.apache.spark.mllib.linalg.{SparseVector, DenseVector,Vectors}
 import org.apache.spark.mllib.regression.LabeledPoint
+import org.apache.hadoop.conf._
+import org.apache.hadoop.fs._
 
 class DataBase(tableBase: String,  numP:Int, sqlContext: SQLContext, filters: String) extends Serializable {
 
@@ -91,7 +93,6 @@ class DataBase(tableBase: String,  numP:Int, sqlContext: SQLContext, filters: St
     .setInputCols( for (i <- names if !(ignore contains i )) yield i)
     .setOutputCol("features"))
     //set the names col
-    namesCol=assembler.getInputCols
     val retorno={
       if(preCal){
         logger.info("........Reading  "+tName +"..............")
@@ -114,6 +115,25 @@ class DataBase(tableBase: String,  numP:Int, sqlContext: SQLContext, filters: St
   }
   retorno
 }
+
+def saveFeaturesToCsv(numFiles:Int,rate:Double, path:String, sc:SparkContext):Unit={
+  logger.warn("if the file exists  will be deleted: "+ path)
+  val fs:FileSystem = FileSystem.get(sc.hadoopConfiguration);
+  fs.delete(new Path(path), true)
+  val names = dataFrameBase.columns
+  // se definen os atributos que no son variables
+  val ignore = Array("idn", "label","resp_code","fraude","nolabel").toSeq
+  dataFrameBase
+  .where("label!=0").where("resp_code=1 or resp_code=2")
+  .sample(false, rate)
+  .select(names.filter(c => !ignore.contains(c)).map(c=> new Column(c)): _*)
+  .coalesce(numFiles)
+  .write.format("com.databricks.spark.csv")
+  .option("header", "true")
+  .save(path)
+  logger.info("........Finish the CSV save...............")
+}
+
 
 def getNamesCol():Array[String]={
   namesCol

@@ -43,23 +43,22 @@ class RandomForestWithBalance(
     extends Serializable {
 
    val numPartitions=numP
-   @transient private val logger = LogManager.getLogger("RandomForestWithBalance")
-   private var metaClassifier = scala.collection.mutable.ArrayBuffer.empty[RandomForestModel]//[PipelineModel]
+   @transient val logger = LogManager.getLogger("RandomForestWithBalance")
+   var metaClassifier = scala.collection.mutable.ArrayBuffer.empty[RandomForestModel]//[PipelineModel]
    // training dataset empty, in this dataset will be saved the balanced dataset
-   @transient val labelMinor=labels(0)
-   @transient val labelMayor=labels(1)
+   val labelMinor=labels(0)
+   val labelMayor=labels(1)
    // relation for balance the training datasets
    val numOfMinorClass= baseTrain.where("label="+labelMinor).count()
    val numOfMayorClass= baseTrain.where("label!="+labelMinor).count()
    logger.info("Minor class " +numOfMinorClass)
    logger.info("Mayor class " +numOfMayorClass)
    // calculate the smaple fraction and the number of classifiers
-   private val sampleFraction=numOfMinorClass.toDouble/numOfMayorClass.toDouble
-   private val fractionInv=numOfMayorClass/numOfMinorClass
+   val sampleFraction=numOfMinorClass.toDouble/numOfMayorClass.toDouble
+   val fractionInv=numOfMayorClass/numOfMinorClass
    // avoid odd values
-   private val  numClassifiers=if (fractionInv%2==0) fractionInv + 1 else fractionInv
+   val  numClassifiers=if (fractionInv%2==0) fractionInv + 1 else fractionInv
    // indexers and converters
-   private val featureIndex=feIndx
    val categoricalFeaturesInfo=feIndx.categoryMaps
    val cat=categoricalFeaturesInfo.map(kv => (kv._1, kv._2.size))
    //labeles
@@ -69,24 +68,23 @@ class RandomForestWithBalance(
   //set the training dataset
   @transient def getTrainingBalancedSet() : DataFrame ={
     val dfMinor= baseTrain.where("label="+labelMinor)
-    val dfMayor= baseTrain.where("label!="+labelMinor).sample(false,sampleFraction)
-    val res=dfMinor.unionAll(dfMayor)
+    val dfMayor= baseTrain.where("label!="+labelMinor).sample(true,sampleFraction)
+    val res=dfMinor.unionAll(dfMayor).select("label", "indexedFeatures")
     res
-   }
+    }
   //Convert dataframe to RDD with labeled parsed
   def toRDDLabeledParsed(dataInput:DataFrame):RDD[LabeledPoint]={
     val rows=dataInput.rdd
-    @transient val lm=labelMinor
     val labeledData: RDD[LabeledPoint]=rows.map(row =>{
       // convert the labels if is equal to labelMinor so 1.0 for other 0.0
-      val newLabel= if(row.getDouble(0)==lm) 1.0 else 0.0
+      val newLabel= if(row.getDouble(0)==labelMinor) 1.0 else 0.0
       val res=LabeledPoint(newLabel,row.getAs[SparseVector](1))
       res})
     labeledData
   }
 
   //training one tree
-  private def trainingTree() : RandomForestModel  = {
+  def trainingTree() : RandomForestModel  = {
     // set the training dataset in each traiing
     @transient val data=getTrainingBalancedSet()
     @transient
@@ -131,6 +129,7 @@ class RandomForestWithBalance(
     }
   }
 
+
 // function to get predictions and probilities of the trees
   def predictWithProb(tree: DecisionTreeModel,features: Vector) : Array[Double] = {
     predictNodeProb(tree.topNode, features)
@@ -139,7 +138,6 @@ class RandomForestWithBalance(
   def avgList(lista: ArrayBuffer[Array[Double]]): Double={
     lista.map(_(1)).sum/lista.size
   }
-
 // get the predictions in soft way!
   def labelAndProbSoft(results: ArrayBuffer[Array[Double]]) : (Double,Double,Double)={
     val predOnes=results.filter(_(0)==1.0).union(results.filterNot(_(0)==1.0).map(a=>Array(1.0,1.0-a(1))))
@@ -148,16 +146,16 @@ class RandomForestWithBalance(
     val predZeros=results.filterNot(_(0)==1.0).union(results.filter(_(0)==1.0).map(a=>Array(0.0,1.0-a(1))))
     val proClaseUno=avgList(predOnes)
     val proClaseCero=avgList(predZeros)
-    val predLabel=
+    val predLabel={
       if(proClaseUno>proClaseCero || countOne>countZero)
         labelMinor
       else if(proClaseUno<proClaseCero || countOne<countZero)
         labelMayor
       else
         labelMayor
+      }
     (predLabel,proClaseCero,proClaseUno)
   }
-
   // predcit one sample of a RDD depending of the Startegy
   def predictOneSampleProb(sample: LabeledPoint,
       models: scala.collection.mutable.ArrayBuffer[RandomForestModel],
@@ -186,11 +184,11 @@ class RandomForestWithBalance(
   def getPredictions(testData:DataFrame,
       sc:SparkContext,
       estrategia: String="soft") : DataFrame ={
-    @transient val labeledPoints: RDD[LabeledPoint]=toRDDLabeledParsed(testData)
+    val feaData=feIndx.transform(testData).select("label", "indexedFeatures")
+    val labeledPoints: RDD[LabeledPoint]=toRDDLabeledParsed(feaData)
     //broadcast all the trees trained
-    @transient val arboles=metaClassifier
-    @transient val labelsCopy=labels
-    @transient val treesBroadcasted=sc.broadcast(arboles)
+    val arboles=metaClassifier
+    val treesBroadcasted=sc.broadcast(arboles)
     val rddPredictions=labeledPoints.map(point=>{
     predictOneSampleProb(point,treesBroadcasted.value,estrategia)})
     //convert to dataframe
@@ -211,7 +209,7 @@ class RandomForestWithBalance(
     rows.take(1)(0)
   }
 
-  private def computeFeatureImportance(
+  def computeFeatureImportance(
       node: Node,
       importances: OpenHashMap[Int, Double]): Unit = {
     val res={
@@ -226,13 +224,11 @@ class RandomForestWithBalance(
 
     }
 
-
-   private def normalizeMapValues(map: OpenHashMap[Int, Double]): Unit = {
+   def normalizeMapValues(map: OpenHashMap[Int, Double]): Unit = {
     val total = map.map(_._2).sum
     if (total != 0) {
       val keys = map.iterator.map(_._1).toArray
       keys.foreach { key => map.put(key, map.get(key).getOrElse(0.0)/total) }
-
     }
   }
 
@@ -281,12 +277,17 @@ class RandomForestWithBalance(
     numClassifiers
   }
 
+  def saveModel(path:String,sc:SparkContext): Unit ={
+    for( i <- 0 to numClassifiers.toInt-1){
+      sc.parallelize(Seq(metaClassifier(i)), 1).saveAsObjectFile(path+"_tree"+i)
+    }
+  }
 
-
-
-
-
-
+  def loadModel(path:String,sc:SparkContext): Unit ={
+    for( i <- 0 to numClassifiers.toInt-1){
+      metaClassifier += sc.objectFile[RandomForestModel](path+"_tree"+i).first()
+    }
+  }
 /*
 root
  |-- label: double (nullable = true)   SI
@@ -298,6 +299,4 @@ root
  |-- prediction: double (nullable = true)
  |-- predictedLabel: string (nullable = true) SI
 */
-
-
  }
