@@ -61,7 +61,7 @@ class DataBase(tableBase: String,  numP:Int, sqlContext: SQLContext, filters: St
     else
       sqlContext.sql(query).where(filters).coalesce(numP)
     }
-  private val logger = LogManager.getLogger("DataBase")
+  @transient private val logger = LogManager.getLogger("DataBase")
   private var namesCol: Array[String]=Array[String]()
 
 

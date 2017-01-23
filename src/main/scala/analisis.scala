@@ -25,7 +25,7 @@ object analisis {
 
   def proRatio(row:org.apache.spark.sql.Row, inv:Boolean):Double ={
     val values=row.getAs[DenseVector](0)
-    val small=0.0000001
+    val small=0.0000000000001
     val log = {
       if(inv&&values(1)!=0&&values(0)!=0.0)
         math.log(values(1)/values(0))
@@ -80,10 +80,6 @@ def main(args: Array[String]) {
   c.copy(read = x) ).text("read is parameter that says wich is the base table")
   opt[String]('o', "out").action( (x, c) =>
   c.copy(out = x) ).text("nameof the outfiles")
-  opt[String]('m', "mex").action( (x, c) =>
-  c.copy(mex = x) ).text("memory executor (7g or 7000m)")
-  opt[String]('h', "hmem").action( (x, c) =>
-  c.copy(hmem = x) ).text("memory executor overhead (7g or 7000m)")
   opt[String]('e', "estrategia").action( (x, c) =>
   c.copy(estrategia = x) ).text("strategy to solve the imbalance(kmeans,meta,smote)")
   opt[Int]('k', "kfolds").action( (x, c) =>
@@ -120,8 +116,6 @@ def main(args: Array[String]) {
  	   val opt=config.read
  	   val salida=config.out
  	   val imp=config.imp.toArray
- 	   val memex=config.mex
- 	   val memover=config.hmem
  	   val est=config.estrategia
      val filtros=config.filter
      val ejesX=config.axes.toArray
@@ -139,8 +133,6 @@ def main(args: Array[String]) {
      //Begin the analysis
      logger.info("Solicitando recursos a Spark")
      val conf = new SparkConf().setAppName("AnalisisP2P_balanced")
-     .set("spark.executor.memory",memex)
-     .set("spark.yarn.executor.memoryOverhead", memover)
      val sc = new SparkContext(conf)
      val sqlContext = new org.apache.spark.sql.hive.HiveContext(sc)
      import sqlContext.implicits._
@@ -156,6 +148,8 @@ def main(args: Array[String]) {
      var textRoc="X,Y,k,impurity,depth,bins\n"
      var txtDensidadAc="X,Y,k,type,impurity,depth,bins\n"
      var txtDensidad=""
+     var txtDensidadAc2="X,Y,k,type,impurity,depth,bins\n"
+     var txtDensidad2=""
      val featureIndexer = (new VectorIndexer()
      .setInputCol("features")
      .setOutputCol("indexedFeatures")
@@ -163,8 +157,8 @@ def main(args: Array[String]) {
      .fit(labeledDF))
      //transforming all the data
      val dfTemporal= featureIndexer.transform(labeledDF).select("label", "indexedFeatures")
-     logger.info("........writing"+ salida +  "_temporal..............")
-     labeledDF.write.mode(SaveMode.Overwrite).saveAsTable(salida+"_temporal")
+     logger.info("........writing "+ salida +  "_temporal..............")
+     dfTemporal.write.mode(SaveMode.Overwrite).saveAsTable(salida+"_temporal")
      labeledDF.unpersist()
      logger.info("........reading "+ salida +  "_temporal..............")
      val dataTransformed=sqlContext.sql("SELECT * FROM "+salida+"_temporal").coalesce(numPartitions).cache()
@@ -191,6 +185,8 @@ def main(args: Array[String]) {
      model.training()
      // getting the features importances
     logger.info("..........Testing...............")
+    // define the x axis
+     val axis=(ejesX(0).toDouble to ejesX(1).toDouble by 0.5d).toArray
      // Make predictions.
      logger.info("..........Calculate Error on test...............")
      var predictions = model.getPredictions(testData,sc,"soft")
@@ -215,6 +211,20 @@ def main(args: Array[String]) {
      textOut=(textOut + "test," + tp + "," + fn + "," + tn + "," + fp + "," +
        TPR + "," + SPC + "," + PPV + "," + acc + "," + f1  +  "," +mGeo +  ","
         + pExc + "," + MCC + "," + aROC + "," + params + "\n"  filterNot ("()" contains _) )
+     logger.info("..........getting densidity for testing...............")
+     var predLegal = predictions.where("label=-1.0")
+     var predDen = predLegal.select("probability")
+     logger.info("..........getting densidity legal...............")
+     var d1= getDenText(predDen,"Legal," +params,axis,true,a)
+     var predFraud= predictions.where("label=1.0")
+     predDen = predFraud.select("probability")
+     logger.info("..........getting densidity fraude...............")
+     var d2= getDenText(predDen,"Fraude," +params,axis,true,a)
+     txtDensidad=d1+d2
+     txtDensidadAc=txtDensidadAc+txtDensidad
+     var pwdensidad = new PrintWriter(new File(salida+"_denisad_test.csv" ))
+     pwdensidad.write(txtDensidadAc)
+     pwdensidad.close
      predictions.unpersist()
      logger.info("..........Calculate Error on Training...............")
      // Make predictions.
@@ -237,21 +247,19 @@ def main(args: Array[String]) {
      textOut=(textOut + "train," + tp + "," + fn + "," + tn + "," + fp + "," +
        TPR + "," + SPC + "," + PPV + "," + acc + "," + f1  +  "," +mGeo +  ","
         + pExc + "," + MCC + "," + aROC + "," + params + "\n"  filterNot ("()" contains _) )
-    // define the x axis
-    val axis=(ejesX(0).toDouble to ejesX(1).toDouble by 0.5d).toArray
-    logger.info("..........getting densidity...............")
-    val predLegal = predictions.where("label=-1.0")
-    var predDen = predLegal.select("probability")
+    logger.info("..........getting densidity for training...............")
+    predLegal = predictions.where("label=-1.0")
+    predDen = predLegal.select("probability")
     logger.info("..........getting densidity legal...............")
-    val d1= getDenText(predDen,"Legal," +params,axis,false,a)
-    val predFraud= predictions.where("label=1.0")
+    d1= getDenText(predDen,"Legal," +params,axis,true,a)
+    predFraud= predictions.where("label=1.0")
     predDen = predFraud.select("probability")
     logger.info("..........getting densidity fraude...............")
-    val d2= getDenText(predDen,"Fraude," +params,axis,false,a)
-    txtDensidad=d1+d2
-    txtDensidadAc=txtDensidadAc+txtDensidad
-    val pwdensidad = new PrintWriter(new File(salida+"_denisad.csv" ))
-    pwdensidad.write(txtDensidadAc)
+    d2= getDenText(predDen,"Fraude," +params,axis,true,a)
+    txtDensidad2=d1+d2
+    txtDensidadAc2=txtDensidadAc2+txtDensidad2
+    pwdensidad = new PrintWriter(new File(salida+"_denisad_train.csv" ))
+    pwdensidad.write(txtDensidadAc2)
     pwdensidad.close
     predictions.unpersist()
     logger.info("..........writing the files...............")
@@ -299,7 +307,7 @@ case None =>
 /*Aqui!!!!!!!!!!!!!!!!!!!!!!
 
 
-nohup spark-submit --driver-memory 10g --class "analisis" AnalisisP2P_Balanced-assembly-1.0.jar -i variables_finales_tarjeta -p 96 -h 1000 -m 11000m -r 1 -o balanced_test -e balanced -k 5 -i gini,entropy -d 20,30 -b 32,128,256 -a -50,50 -t 0.7 -f "monto<100000000" > balanced_test_log 2>&1&
+nohup spark-submit --driver-memory 10g --class "analisis" AnalisisP2P_Balanced-assembly-1.0.jar -i variables_finales_tarjeta -p 96 -h 1000 -m 11000m -r 1 -o balanced_13Ene -e balanced -k 5 -i gini,entropy -d 30,10 -b 32,128,256 -a -50,50 -t 0.7 -f "monto<100000000" > balanced_13Ene_log 2>&1&
 
 nohup spark-submit --driver-memory 10g --num-executors 5 --class "analisis" AnalisisP2P_Balanced-assembly-1.0.jar -i test -p 100 -h 1000 -m 9000m -r 0 -o test -e balanced -k 4 -i gini,entropy -d 20,30 -b 32,128 -a -25,25 > test 2>&1&
 

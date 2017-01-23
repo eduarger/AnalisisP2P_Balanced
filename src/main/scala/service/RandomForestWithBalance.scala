@@ -41,7 +41,6 @@ class RandomForestWithBalance(
     sqlContext: SQLContext
     )
     extends Serializable {
-
    val numPartitions=numP
    @transient val logger = LogManager.getLogger("RandomForestWithBalance")
    var metaClassifier = scala.collection.mutable.ArrayBuffer.empty[RandomForestModel]//[PipelineModel]
@@ -66,7 +65,7 @@ class RandomForestWithBalance(
    logger.info("sample rate is: "+sampleFraction)
 
   //set the training dataset
-  @transient def getTrainingBalancedSet() : DataFrame ={
+  def getTrainingBalancedSet() : DataFrame ={
     val dfMinor= baseTrain.where("label="+labelMinor)
     val dfMayor= baseTrain.where("label!="+labelMinor).sample(true,sampleFraction)
     val res=dfMinor.unionAll(dfMayor).select("label", "indexedFeatures")
@@ -86,8 +85,7 @@ class RandomForestWithBalance(
   //training one tree
   def trainingTree() : RandomForestModel  = {
     // set the training dataset in each traiing
-    @transient val data=getTrainingBalancedSet()
-    @transient
+    val data=getTrainingBalancedSet()
     val labeledPoints: RDD[LabeledPoint]=toRDDLabeledParsed(data)
     val model = RandomForest.trainClassifier(labeledPoints, 2, cat,
     1, "auto", parameters._1, parameters._2, parameters._3)
@@ -95,16 +93,12 @@ class RandomForestWithBalance(
     }
 
   // training all
-  @transient def training() : Unit  = {
+  def training() : Unit  = {
     logger.info("..........Training...............")
-    //cache the baseTrain
-    baseTrain.persist()
     for( i <- 1 to numClassifiers.toInt){
       metaClassifier += trainingTree()
       if(i%10==0) logger.info("Acabo con clasificardor:"+i)
     }
-    //unpersist the baseTrain
-    baseTrain.persist()
     logger.info("..........Training Finished!...............")
   }
 
@@ -138,14 +132,32 @@ class RandomForestWithBalance(
   def avgList(lista: ArrayBuffer[Array[Double]]): Double={
     lista.map(_(1)).sum/lista.size
   }
-// get the predictions in soft way!
+
+  def logCustom(v: Double): Double={
+    val small=0.0000000000001
+    val log = {
+      if(v==0.0)
+         math.log(small)
+      else
+         math.log(v)
+      }
+    log
+  }
+
+  // average a list taht reprents the output of set o decision trees
+    def sumListLog(lista: ArrayBuffer[Array[Double]]): Double={
+      lista.map(x=>logCustom(x(1))).sum
+    }
+// get the predictions in soft way! Output: (label, probabilityClass0, probabilityClass1)
   def labelAndProbSoft(results: ArrayBuffer[Array[Double]]) : (Double,Double,Double)={
     val predOnes=results.filter(_(0)==1.0).union(results.filterNot(_(0)==1.0).map(a=>Array(1.0,1.0-a(1))))
     val countOne=results.filter(_(0)==1.0).size
     val countZero=results.filterNot(_(0)==1.0).size
     val predZeros=results.filterNot(_(0)==1.0).union(results.filter(_(0)==1.0).map(a=>Array(0.0,1.0-a(1))))
-    val proClaseUno=avgList(predOnes)
-    val proClaseCero=avgList(predZeros)
+    val logUno=math.exp(sumListLog(predOnes))
+    val logZero=math.exp(sumListLog(predZeros))
+    val proClaseUno=(logUno)/((logUno)+(logZero))
+    val proClaseCero=logZero/(logUno+logZero)
     val predLabel={
       if(proClaseUno>proClaseCero || countOne>countZero)
         labelMinor
@@ -161,7 +173,7 @@ class RandomForestWithBalance(
       models: scala.collection.mutable.ArrayBuffer[RandomForestModel],
       estrategia: String="soft") : (Double,Vector,Vector,Double)= {
     val resultado:  (Double,Vector,Vector,Double)={
-    val mapResults=metaClassifier.map(mod => predictWithProb(mod.trees(0),sample.features))
+    val mapResults=models.map(mod => predictWithProb(mod.trees(0),sample.features))
       if(estrategia.equalsIgnoreCase("soft")) {
         //chek the probilities of each class
         val predAndProb=labelAndProbSoft(mapResults)
@@ -184,7 +196,8 @@ class RandomForestWithBalance(
   def getPredictions(testData:DataFrame,
       sc:SparkContext,
       estrategia: String="soft") : DataFrame ={
-    val feaData=feIndx.transform(testData).select("label", "indexedFeatures")
+    //val feaData=feIndx.transform(testData).select("label", "indexedFeatures")
+    val feaData=testData.select("label", "indexedFeatures")
     val labeledPoints: RDD[LabeledPoint]=toRDDLabeledParsed(feaData)
     //broadcast all the trees trained
     val arboles=metaClassifier
