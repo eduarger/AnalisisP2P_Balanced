@@ -3,6 +3,7 @@ import config.Config
 import service.DataBase
 import service.RandomForestWithBalance
 import service.Metrics
+import service.EER
 import java.io._
 import org.apache.log4j.{Level, LogManager, Logger}
 import org.apache.spark.{SparkConf, SparkContext}
@@ -54,6 +55,8 @@ object analisis {
       densities
   }
 
+
+
   // tiene que entrear un dataframe con la probilidad, similar al rwa predcition
   def getDenText(dataIn:DataFrame,inText:String,ejeX:Array[Double],inv:Boolean, k:Int):String={
     var coefLR: RDD[Double] = dataIn.rdd.map(row=>{proRatio(row,inv)})
@@ -61,12 +64,20 @@ object analisis {
     val n=coefLR.count.toDouble
     val h=coefLR.stdev*scala.math.pow((4.0/3.0/n),1.0/5.0)
     val bw=0.1
-    val densidad= denCal(coefLR,bw,x)
+    val densidad= denCal(coefLR,h,x)
     val densidadTxt=for ((value, index) <- x.zipWithIndex)
       yield  (value, densidad(index))
     val out=densidadTxt.mkString(","+k+","+inText+"\n")+","+k+","+inText+"\n" filterNot ("()" contains _)
     out
       }
+
+    // function to save a string in specific file
+   def saveTxtToFile(save:String, file:String): Unit ={
+     val writer = new PrintWriter(new File(file ))
+     writer.write(save)
+     writer.close
+   }
+
 
 def main(args: Array[String]) {
 
@@ -150,6 +161,8 @@ def main(args: Array[String]) {
      var txtDensidad=""
      var txtDensidadAc2="X,Y,k,type,impurity,depth,bins\n"
      var txtDensidad2=""
+     var txtEER="k,type,EER,LR,state,impurity,depth,bins\n"
+     var txtHist="X,Y,k,type,impurity,depth,bins\n"
      val featureIndexer = (new VectorIndexer()
      .setInputCol("features")
      .setOutputCol("indexedFeatures")
@@ -206,6 +219,8 @@ def main(args: Array[String]) {
      var MCC=testMetrics.MCC
     // ROC metrics
      val met = new BinaryClassificationMetrics(predictions.select("Predictedlabel", "label").rdd.map(row=>(row.getDouble(0), row.getDouble(1))))
+     // calling the EER class
+     val eer = new EER()
      textRoc=textRoc+met.roc.collect.mkString(","+a+","+params+"\n")+","+a+","+params+"\n" filterNot ("()" contains _)
      val aROC=met.areaUnderROC
      textOut=(textOut + "test," + tp + "," + fn + "," + tn + "," + fp + "," +
@@ -214,7 +229,6 @@ def main(args: Array[String]) {
      logger.info("..........getting densidity for testing...............")
      var predLegal = predictions.where("label=-1.0")
      var predDen = predLegal.select("probability")
-     logger.info("..........getting densidity legal...............")
      var d1= getDenText(predDen,"Legal," +params,axis,true,a)
      var predFraud= predictions.where("label=1.0")
      predDen = predFraud.select("probability")
@@ -222,10 +236,20 @@ def main(args: Array[String]) {
      var d2= getDenText(predDen,"Fraude," +params,axis,true,a)
      txtDensidad=d1+d2
      txtDensidadAc=txtDensidadAc+txtDensidad
-     var pwdensidad = new PrintWriter(new File(salida+"_denisad_test.csv" ))
-     pwdensidad.write(txtDensidadAc)
-     pwdensidad.close
+     // saving into file
+     saveTxtToFile(txtDensidadAc,salida+"_denisad_test.csv")
+     logger.info("..........getting EER for test...............")
+     val eerTest=eer.compute(predFraud,predLegal,0.00001)
+     txtEER=txtEER + a + "," +"test,"+ eerTest + "," + params + "\n" filterNot ("()[]" contains _)
+     // saving into file
+     saveTxtToFile(txtEER,salida+"_EER.csv")
+     logger.info("..........getting EER plots...............")
+     var txtEERPlot=eer.computePlots(predFraud,predLegal,params,a,150, "test")
+     txtHist=txtHist+txtEERPlot
+     // saving into file
+     saveTxtToFile(txtHist,salida+"_EER_Plots.csv")
      predictions.unpersist()
+     // training data
      logger.info("..........Calculate Error on Training...............")
      // Make predictions.
      predictions = model.getPredictions(trainingData,sc,"soft")
@@ -258,9 +282,18 @@ def main(args: Array[String]) {
     d2= getDenText(predDen,"Fraude," +params,axis,true,a)
     txtDensidad2=d1+d2
     txtDensidadAc2=txtDensidadAc2+txtDensidad2
-    pwdensidad = new PrintWriter(new File(salida+"_denisad_train.csv" ))
-    pwdensidad.write(txtDensidadAc2)
-    pwdensidad.close
+    // saving into file
+    saveTxtToFile(txtDensidadAc2,salida+"_denisad_train.csv")
+    logger.info("..........getting EER for train...............")
+    val eerTrain=eer.compute(predFraud,predLegal,0.00001)
+    txtEER=txtEER + a + "," +"train,"+ eerTrain + "," + params + "\n" filterNot ("()[]" contains _)
+    // saving into file
+    saveTxtToFile(txtEER,salida+"_EER.csv")
+    logger.info("..........getting EER plots...............")
+    txtEERPlot=eer.computePlots(predFraud,predLegal,params,a,150, "train")
+    txtHist=txtHist+txtEERPlot
+    // saving into file
+    saveTxtToFile(txtHist,salida+"_EER_Plots.csv")
     predictions.unpersist()
     logger.info("..........writing the files...............")
     val importances=model.featureImportances.toArray.map(_.toString)
@@ -271,24 +304,18 @@ def main(args: Array[String]) {
     textImp=textImp+(impSave)
     textOut3=(textOut3 + "---Learned classification tree ensemble model with"
      + params + ",trees="+ numTrees + "\n" + model.toDebugString + "\n")
-    val pw = new PrintWriter(new File(salida+"Confusion.csv" ))
-    pw.write(textOut)
-    pw.close
-    val pw2 = new PrintWriter(new File(salida+"Importances.csv" ))
-    pw2.write(textImp)
-    pw2.close
-    val pw3 = new PrintWriter(new File(salida+"Model.txt" ))
-    pw3.write(textOut3)
-    pw3.close
-    val pw4 = new PrintWriter(new File(salida+"Roc.csv" ))
-    pw4.write(textRoc)
-    pw4.close
+    // saving into file
+    saveTxtToFile(textOut,salida+"Confusion.csv")
+    // saving into file
+    saveTxtToFile(textImp,salida+"Importances.csv")
+    // saving into file
+    saveTxtToFile(textOut3,salida+"Model.txt")
+    // saving into file
+    saveTxtToFile(textRoc,salida+"Roc.csv")
     model.saveModel("modelos/"+salida+"/"+params._1+params._2+params._3+"_"+a,sc)
     logger.info("..........termino..............")
 }
-
- //
-
+//
 }
 logger.info("..........termino programa..............")
 sc.stop()
@@ -298,12 +325,6 @@ case None =>
 
   }
 }
-
-
-
-
-
-
 /*Aqui!!!!!!!!!!!!!!!!!!!!!!
 
 
