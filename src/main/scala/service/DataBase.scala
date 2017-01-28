@@ -10,8 +10,9 @@ import org.apache.spark.sql.{types, _}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.Row
 import org.apache.spark.ml.feature.{IndexToString, StringIndexer, VectorIndexer, StringIndexerModel, VectorIndexerModel,VectorAssembler}
-import org.apache.spark.mllib.linalg.{SparseVector, DenseVector,Vectors}
-import org.apache.spark.mllib.regression.LabeledPoint
+import org.apache.spark.ml.feature.LabeledPoint
+import org.apache.spark.ml.linalg.{SparseVector, DenseVector,Vectors}
+import org.apache.spark.sql.SparkSession
 import org.apache.hadoop.conf._
 import org.apache.hadoop.fs._
 
@@ -82,7 +83,7 @@ class DataBase(tableBase: String,  numP:Int, sqlContext: SQLContext, filters: St
     retorno
   }
 
-  def getDataFrameLabeledLegalFraud(preCal:Boolean):DataFrame={
+  def getDataFrameLabeledLegalFraud(preCal:Boolean, spark: SparkSession):DataFrame={
     val tName=tableBase+"_labeled"
     val base=dataFrameBase.where("label!=0").where("resp_code=1 or resp_code=2")
     val names = base.columns
@@ -105,7 +106,7 @@ class DataBase(tableBase: String,  numP:Int, sqlContext: SQLContext, filters: St
         val rows: RDD[Row] = data.rdd
         val labeledPoints: RDD[LabeledPoint]=(rows.map(row =>{LabeledPoint(row.getInt(2).toDouble,
         row.getAs[SparseVector](lon))}))
-        import sqlContext.implicits._
+        import spark.implicits._
         val labeledDF=labeledPoints.toDF()
         logger.info("........writing  "+tName +"..............")
         labeledDF.write.mode(SaveMode.Overwrite).saveAsTable(tName)

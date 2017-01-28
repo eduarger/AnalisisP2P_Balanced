@@ -4,8 +4,8 @@ import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.Row
 import org.apache.spark.sql.SaveMode
 import org.apache.spark.sql.DataFrame
-import org.apache.spark.mllib.regression.LabeledPoint
-import org.apache.spark.mllib.linalg.{SparseVector, DenseVector,Vectors,Vector}
+import org.apache.spark.ml.feature.LabeledPoint
+import org.apache.spark.ml.linalg.{SparseVector, DenseVector,Vectors,Vector}
 import scala.collection.mutable.ArrayBuffer
 import org.apache.spark.sql.Column
 import org.apache.spark.sql.functions._
@@ -17,7 +17,7 @@ class EER()  extends Serializable {
  @transient val logger = LogManager.getLogger("ERR Computation")
 
 
-  val proRatio = (values:Vector,inv:Boolean) => {
+  val proRatio = (values:org.apache.spark.mllib.linalg.Vector,inv:Boolean) => {
     val small=0.0000000000001
     val log = {
     if(inv&&values(1)!=0&&values(0)!=0.0)
@@ -46,6 +46,37 @@ class EER()  extends Serializable {
    val res=scores.select(name).withColumn("lr", sqlProRatio(col(name),lit(inv)))
    res
  }
+
+
+  def rowToValues(row: Row): (Double,Double,Double,Double,Double)={
+    val probs=row.getAs[org.apache.spark.mllib.linalg.DenseVector](0)
+    val prozero=probs(0)
+    val proone=probs(1)
+    val lb=row.getDouble(1)
+    val predlb=row.getDouble(2)
+    val lr=row.getDouble(3)
+    (prozero,proone,lb,predlb,lr)
+  }
+
+
+ def getDFtoSave(scores:DataFrame, name: String,  names: Array[String], inv :Boolean, spark: SparkSession):DataFrame={
+  val cols=names.map(name => col(name))
+  val res=scores.select(cols : _*).withColumn("lr", sqlProRatio(col(name),lit(inv)))
+  val rddMap = res.rdd.map (row =>{ rowToValues(row) } )
+  import spark.implicits._
+  val redDF=rddMap.toDF("pro_clase0", "pro_clase1", "label", "predictedlabel", "score_lr")
+  redDF
+}
+
+def saveScores(trueSet: DataFrame,falseSet: DataFrame, path: String, spark: SparkSession):Unit={
+  val names=Array("probability", "label", "predictedLabel")
+  val trueScores=getDFtoSave(trueSet,names(0),names, true, spark)
+  val falseScores=getDFtoSave(falseSet,names(0),names, true, spark)
+  val scores = trueScores.union(falseScores).coalesce(1)
+  scores.printSchema()
+  scores.write.mode(SaveMode.Overwrite).option("header", "true").csv(path)
+
+}
 
 
   def compute(trueSet:DataFrame,falseSet:DataFrame, tol:Double):Vector={
@@ -95,7 +126,8 @@ class EER()  extends Serializable {
       eer
     }
 
-    def computePlots(trueSet: DataFrame, falseSet: DataFrame, params: (String, Int, Int), k:Int, bins:Int, clase: String):String={
+    def computePlots(trueSet: DataFrame, falseSet: DataFrame, params: (String, Int, Int), k:Int, bins:Int, clase: String, spark: SparkSession):String={
+      import spark.implicits._
       val trueScores=getLikeHoodRatio(trueSet,"probability",true)
       val falseScores=getLikeHoodRatio(falseSet,"probability",true)
       val limits=trueScores.unionAll(falseScores).select(min(col("lr")), max(col("lr"))).collect
@@ -103,18 +135,18 @@ class EER()  extends Serializable {
       val xmax=limits(0).getDouble(1)
       val increment = (xmax - xmin) / (bins - 1)
       val x = List.tabulate(bins)(i => xmin +  increment * i).toArray
-      val trueNum = trueScores.select("lr").map { _.getDouble(0)}.histogram(x)
+      val trueNum = trueScores.select("lr").rdd. map { _.getDouble(0)}.histogram(x)
       val cumfa=trueNum.scanLeft(0)(_.toInt+_.toInt)
       val numfa=cumfa.map{_.toDouble/cumfa.max}
-      val falseNum = falseScores.select("lr").map { _.getDouble(0)}.histogram(x)
+      val falseNum = falseScores.select("lr").rdd.map { _.getDouble(0)}.histogram(x)
       val cumfr=falseNum.scanLeft(0)(_.toInt+_.toInt)
       val numfr=cumfr.map{_.toDouble/cumfr.max}
       val histnumFa=for ((value, index) <- x.zipWithIndex)
         yield  (value, numfa(index))
       val histnumFr=for ((value, index) <- x.zipWithIndex)
         yield  (value, numfr(index))
-      var out=histnumFa.mkString(","+k+","+clase+"-fraude,"+params + "\n")+","+k+","+"fraude,"+params+"\n" filterNot ("()" contains _)
-      out=out+histnumFr.mkString(","+k+","+clase+"-legal,"+params + "\n")+","+k+","+"legal,"+params+"\n" filterNot ("()" contains _)
+      var out=histnumFa.mkString(","+k+","+clase+"-fraude,"+params + "\n")+","+k+","+clase+"-fraude,"+params+"\n" filterNot ("()" contains _)
+      out=out+histnumFr.mkString(","+k+","+clase+"-legal,"+params + "\n")+","+k+","+clase+"-legal,"+params+"\n" filterNot ("()" contains _)
       out
     }
 

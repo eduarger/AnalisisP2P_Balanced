@@ -15,12 +15,13 @@ import org.apache.spark.sql.Row
 import org.apache.spark.sql.SaveMode
 import org.apache.spark.sql.SQLContext
 import org.apache.spark.sql.DataFrame
-import org.apache.spark.mllib.regression.LabeledPoint
-import org.apache.spark.mllib.linalg.{SparseVector, DenseVector,Vectors}
+import org.apache.spark.ml.feature.LabeledPoint
+import org.apache.spark.ml.linalg.{SparseVector, DenseVector,Vectors}
 import org.apache.spark.mllib.stat.KernelDensity
 import scala.collection.mutable.ArrayBuffer
 import org.apache.spark.mllib.tree.model.Split
 import org.apache.spark.mllib.evaluation.BinaryClassificationMetrics
+import org.apache.spark.sql.SparkSession
 
 object analisis {
 
@@ -72,11 +73,13 @@ object analisis {
       }
 
     // function to save a string in specific file
-   def saveTxtToFile(save:String, file:String): Unit ={
-     val writer = new PrintWriter(new File(file ))
-     writer.write(save)
-     writer.close
-   }
+    def saveTxtToFile(save:String, file:String): Unit ={
+      val f = new File (file)
+      f.getParentFile().mkdirs()
+      val writer = new PrintWriter(f)
+      writer.write(save)
+      writer.close
+    }
 
 
 def main(args: Array[String]) {
@@ -91,8 +94,6 @@ def main(args: Array[String]) {
   c.copy(read = x) ).text("read is parameter that says wich is the base table")
   opt[String]('o', "out").action( (x, c) =>
   c.copy(out = x) ).text("nameof the outfiles")
-  opt[String]('e', "estrategia").action( (x, c) =>
-  c.copy(estrategia = x) ).text("strategy to solve the imbalance(kmeans,meta,smote)")
   opt[Int]('k', "kfolds").action( (x, c) =>
   c.copy(kfolds = x) ).text("kfolds is an integer of num of folds")
   opt[Seq[String]]('i', "imp").valueName("<impurity>,<impurity>...").action( (x,c) =>
@@ -107,6 +108,8 @@ def main(args: Array[String]) {
   c.copy(train = x) ).text("percentaje of sampel to train the system")
   opt[String]('f', "filter").action( (x, c) =>
   c.copy(filter = x) ).text("filters of the tabla of input")
+  opt[Boolean]('D', "densidad").valueName("if the densidity and other measure is calculated").action( (x,c) =>
+  c.copy(densidad = x) ).text("depth to evaluate")
   help("help").text("prints this usage text")
 }
 // parser.parse returns Option[C]
@@ -127,10 +130,10 @@ def main(args: Array[String]) {
  	   val opt=config.read
  	   val salida=config.out
  	   val imp=config.imp.toArray
- 	   val est=config.estrategia
      val filtros=config.filter
      val ejesX=config.axes.toArray
      val pTrain=config.train
+     val denFlag=config.densidad
      logger.info("Taking the folliwng filters: "+ filtros)
      logger.info("..........buliding grid of parameters...............")
      val grid = for {
@@ -143,15 +146,18 @@ def main(args: Array[String]) {
      for (a <- grid) println(a)
      //Begin the analysis
      logger.info("Solicitando recursos a Spark")
-     val conf = new SparkConf().setAppName("AnalisisP2P_balanced")
-     val sc = new SparkContext(conf)
-     val sqlContext = new org.apache.spark.sql.hive.HiveContext(sc)
-     import sqlContext.implicits._
+     val spark = SparkSession
+       .builder()
+       .appName("AnalisisP2P_Balnced2.1")
+       .enableHiveSupport()
+       .getOrCreate()
+     val conf = new SparkConf().setAppName("AnalisisP2P")
+     val sqlContext = spark.sqlContext
      // read the tabla base
      val db=new DataBase(tablaBase,numPartitions,sqlContext,filtros)
      // if opt==0 the table is readed otherwise the dataframe
      // is calculated from zero
-     val labeledDF = db.getDataFrameLabeledLegalFraud(opt=="0").cache()
+     val labeledDF = db.getDataFrameLabeledLegalFraud(opt=="0",spark).cache()
      val ncol=db.getNamesCol
      var textOut="tipo,tp,fn,tn,fp,TPR,SPC,PPV,ACC,F1,MGEO,PEXC,MCC,areaRoc,impurity,depth,bins\n"
      var textImp="variable,importance,impurity,depth,bins\n"
@@ -178,22 +184,15 @@ def main(args: Array[String]) {
     for ( a <- 1 to k)
     {
      for(params <- grid){
+      val salidaDir="/home/german.melo/files/"+salida+"/"+params._1+params._2+params._3+"_"+a+"/out"
       logger.info("............using(impurity,depth, bins)............. " + params)
       logger.info("............using percetanje for train: " + pTrain +" and testing: " + (1.0-pTrain))
       val Array(trainingData, testData) = dataTransformed.randomSplit(Array(pTrain, 1.0-pTrain))
 
       // creation of the model
-      var model = {
-        if (est=="balanced") {
-          new RandomForestWithBalance(trainingData,
+      var model =new RandomForestWithBalance(trainingData,
             params,numPartitions,featureIndexer,
             Array(1.0,-1.0),sqlContext)
-        } else{
-        new RandomForestWithBalance(trainingData,
-          params,numPartitions,featureIndexer,
-          Array(1.0,-1.0),sqlContext)
-        }
-     }
      // training the model
      model.training()
      // getting the features importances
@@ -202,7 +201,7 @@ def main(args: Array[String]) {
      val axis=(ejesX(0).toDouble to ejesX(1).toDouble by 0.5d).toArray
      // Make predictions.
      logger.info("..........Calculate Error on test...............")
-     var predictions = model.getPredictions(testData,sc,"soft")
+     var predictions = model.getPredictions(testData,spark,"soft")
      predictions.persist()
      val testMetrics=new Metrics(predictions, Array(1.0,-1.0))
      var tp=testMetrics.tp
@@ -226,33 +225,40 @@ def main(args: Array[String]) {
      textOut=(textOut + "test," + tp + "," + fn + "," + tn + "," + fp + "," +
        TPR + "," + SPC + "," + PPV + "," + acc + "," + f1  +  "," +mGeo +  ","
         + pExc + "," + MCC + "," + aROC + "," + params + "\n"  filterNot ("()" contains _) )
-     logger.info("..........getting densidity for testing...............")
-     var predLegal = predictions.where("label=-1.0")
-     var predDen = predLegal.select("probability")
-     var d1= getDenText(predDen,"Legal," +params,axis,true,a)
-     var predFraud= predictions.where("label=1.0")
-     predDen = predFraud.select("probability")
-     logger.info("..........getting densidity fraude...............")
-     var d2= getDenText(predDen,"Fraude," +params,axis,true,a)
-     txtDensidad=d1+d2
-     txtDensidadAc=txtDensidadAc+txtDensidad
-     // saving into file
-     saveTxtToFile(txtDensidadAc,salida+"_denisad_test.csv")
-     logger.info("..........getting EER for test...............")
-     val eerTest=eer.compute(predFraud,predLegal,0.00001)
-     txtEER=txtEER + a + "," +"test,"+ eerTest + "," + params + "\n" filterNot ("()[]" contains _)
-     // saving into file
-     saveTxtToFile(txtEER,salida+"_EER.csv")
-     logger.info("..........getting EER plots...............")
-     var txtEERPlot=eer.computePlots(predFraud,predLegal,params,a,150, "test")
-     txtHist=txtHist+txtEERPlot
-     // saving into file
-     saveTxtToFile(txtHist,salida+"_EER_Plots.csv")
+
+
+      var predLegal = predictions.where("label=-1.0")
+      var predFraud= predictions.where("label=1.0")
+       if(denFlag){
+         logger.info("..........getting densidity for testing...............")
+         var predDen = predLegal.select("probability")
+         var d1= getDenText(predDen,"Legal," +params,axis,true,a)
+         predDen = predFraud.select("probability")
+         logger.info("..........getting densidity fraude...............")
+         var d2= getDenText(predDen,"Fraude," +params,axis,true,a)
+         txtDensidad=d1+d2
+         txtDensidadAc=txtDensidadAc+txtDensidad
+         // saving into file
+         saveTxtToFile(txtDensidadAc,salidaDir+"_denisad_test.csv")
+         logger.info("..........getting EER for test...............")
+         val eerTest=eer.compute(predFraud,predLegal,0.00001)
+         txtEER=txtEER + a + "," +"test,"+ eerTest + "," + params + "\n" filterNot ("()[]" contains _)
+         // saving into file
+         saveTxtToFile(txtEER,salidaDir+"_EER.csv")
+         logger.info("..........getting EER plots...............")
+         var txtEERPlot=eer.computePlots(predFraud,predLegal,params,a,150, "test", spark)
+         txtHist=txtHist+txtEERPlot
+         // saving into file
+         saveTxtToFile(txtHist,salidaDir+"_EER_Plots.csv")
+       }
+
+     logger.info("..........saving testScores...............")
+     eer.saveScores(predFraud,predLegal,"scoresTest/"+salida+"/"+params._1+params._2+params._3+"_"+a,spark)
      predictions.unpersist()
      // training data
      logger.info("..........Calculate Error on Training...............")
      // Make predictions.
-     predictions = model.getPredictions(trainingData,sc,"soft")
+     predictions = model.getPredictions(trainingData,spark,"soft")
      predictions.persist()
      //TODO: define a Class for the metrics
      val trainMetrics=new Metrics(predictions, Array(1.0,-1.0))
@@ -271,29 +277,33 @@ def main(args: Array[String]) {
      textOut=(textOut + "train," + tp + "," + fn + "," + tn + "," + fp + "," +
        TPR + "," + SPC + "," + PPV + "," + acc + "," + f1  +  "," +mGeo +  ","
         + pExc + "," + MCC + "," + aROC + "," + params + "\n"  filterNot ("()" contains _) )
-    logger.info("..........getting densidity for training...............")
-    predLegal = predictions.where("label=-1.0")
-    predDen = predLegal.select("probability")
-    logger.info("..........getting densidity legal...............")
-    d1= getDenText(predDen,"Legal," +params,axis,true,a)
-    predFraud= predictions.where("label=1.0")
-    predDen = predFraud.select("probability")
-    logger.info("..........getting densidity fraude...............")
-    d2= getDenText(predDen,"Fraude," +params,axis,true,a)
-    txtDensidad2=d1+d2
-    txtDensidadAc2=txtDensidadAc2+txtDensidad2
-    // saving into file
-    saveTxtToFile(txtDensidadAc2,salida+"_denisad_train.csv")
-    logger.info("..........getting EER for train...............")
-    val eerTrain=eer.compute(predFraud,predLegal,0.00001)
-    txtEER=txtEER + a + "," +"train,"+ eerTrain + "," + params + "\n" filterNot ("()[]" contains _)
-    // saving into file
-    saveTxtToFile(txtEER,salida+"_EER.csv")
-    logger.info("..........getting EER plots...............")
-    txtEERPlot=eer.computePlots(predFraud,predLegal,params,a,150, "train")
-    txtHist=txtHist+txtEERPlot
-    // saving into file
-    saveTxtToFile(txtHist,salida+"_EER_Plots.csv")
+        predLegal = predictions.where("label=-1.0")
+        predFraud= predictions.where("label=1.0")
+        if(denFlag){
+          logger.info("..........getting densidity for training...............")
+          var predDen = predLegal.select("probability")
+          logger.info("..........getting densidity legal...............")
+          var d1= getDenText(predDen,"Legal," +params,axis,true,a)
+          predDen = predFraud.select("probability")
+          logger.info("..........getting densidity fraude...............")
+          var d2= getDenText(predDen,"Fraude," +params,axis,true,a)
+          txtDensidad2=d1+d2
+          txtDensidadAc2=txtDensidadAc2+txtDensidad2
+          // saving into file
+          saveTxtToFile(txtDensidadAc2,salidaDir+"_denisad_train.csv")
+          logger.info("..........getting EER for train...............")
+          val eerTrain=eer.compute(predFraud,predLegal,0.00001)
+          txtEER=txtEER + a + "," +"train,"+ eerTrain + "," + params + "\n" filterNot ("()[]" contains _)
+          // saving into file
+          saveTxtToFile(txtEER,salidaDir+"_EER.csv")
+          logger.info("..........getting EER plots...............")
+          var txtEERPlot=eer.computePlots(predFraud,predLegal,params,a,150, "train", spark)
+          txtHist=txtHist+txtEERPlot
+          // saving into file
+          saveTxtToFile(txtHist,salidaDir+"_EER_Plots.csv")
+        }
+        logger.info("..........saving train Scores...............")
+        eer.saveScores(predFraud,predLegal,"scoresTrain/"+salida+"/"+params._1+params._2+params._3+"_"+a, spark)
     predictions.unpersist()
     logger.info("..........writing the files...............")
     val importances=model.featureImportances.toArray.map(_.toString)
@@ -305,20 +315,20 @@ def main(args: Array[String]) {
     textOut3=(textOut3 + "---Learned classification tree ensemble model with"
      + params + ",trees="+ numTrees + "\n" + model.toDebugString + "\n")
     // saving into file
-    saveTxtToFile(textOut,salida+"Confusion.csv")
+    saveTxtToFile(textOut,salidaDir+"Confusion.csv")
     // saving into file
-    saveTxtToFile(textImp,salida+"Importances.csv")
+    saveTxtToFile(textImp,salidaDir+"Importances.csv")
     // saving into file
-    saveTxtToFile(textOut3,salida+"Model.txt")
+    saveTxtToFile(textOut3,salidaDir+"Model.txt")
     // saving into file
-    saveTxtToFile(textRoc,salida+"Roc.csv")
-    model.saveModel("modelos/"+salida+"/"+params._1+params._2+params._3+"_"+a,sc)
+    saveTxtToFile(textRoc,salidaDir+"Roc.csv")
+    model.saveModel("modelos/"+salida+"/"+params._1+params._2+params._3+"_"+a,spark.sparkContext)
     logger.info("..........termino..............")
 }
 //
 }
 logger.info("..........termino programa..............")
-sc.stop()
+spark.stop()
 case None =>
     println(".........arguments are bad...............")
 }

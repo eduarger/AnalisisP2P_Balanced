@@ -11,8 +11,8 @@ import org.apache.spark.sql.Row
 import org.apache.spark.sql.SaveMode
 import org.apache.spark.sql.SQLContext
 import org.apache.spark.sql.DataFrame
-import org.apache.spark.mllib.regression.LabeledPoint
-import org.apache.spark.mllib.linalg.{SparseVector, DenseVector,Vectors,Vector}
+import org.apache.spark.ml.feature.LabeledPoint
+import org.apache.spark.ml.linalg.{SparseVector, DenseVector,Vectors, Vector}
 import scala.collection.mutable.ArrayBuffer
 import org.apache.spark.sql.Column
 import org.apache.spark.sql.functions._
@@ -20,6 +20,13 @@ import org.apache.spark.sql.{types, _}
 import org.apache.spark.mllib.tree.configuration.FeatureType._
 import org.apache.spark.mllib.tree.model.Node
 import scala.collection.mutable.OpenHashMap // instead of private class import org.apache.spark.util.collection.OpenHashMap
+import org.apache.spark.sql.SparkSession
+
+//import org.apache.spark.mllib.linalg.SparseVector
+//import org.apache.spark.mllib.linalg.DenseVector
+//import org.apache.spark.mllib.linalg.Vectors
+//import org.apache.spark.mllib.linalg.Vector
+
 /**
  * Clase para que define un clasificador basado en Random Forest
  * Cada random forest tendra un solo arbol pero sera entrenado
@@ -68,16 +75,16 @@ class RandomForestWithBalance(
   def getTrainingBalancedSet() : DataFrame ={
     val dfMinor= baseTrain.where("label="+labelMinor)
     val dfMayor= baseTrain.where("label!="+labelMinor).sample(true,sampleFraction)
-    val res=dfMinor.unionAll(dfMayor).select("label", "indexedFeatures")
+    val res=dfMinor.union(dfMayor).select("label", "indexedFeatures")
     res
     }
   //Convert dataframe to RDD with labeled parsed
-  def toRDDLabeledParsed(dataInput:DataFrame):RDD[LabeledPoint]={
+  def toRDDLabeledParsed(dataInput:DataFrame):RDD[org.apache.spark.mllib.regression.LabeledPoint]={
     val rows=dataInput.rdd
-    val labeledData: RDD[LabeledPoint]=rows.map(row =>{
+    val labeledData: RDD[org.apache.spark.mllib.regression.LabeledPoint]=rows.map(row =>{
       // convert the labels if is equal to labelMinor so 1.0 for other 0.0
       val newLabel= if(row.getDouble(0)==labelMinor) 1.0 else 0.0
-      val res=LabeledPoint(newLabel,row.getAs[SparseVector](1))
+      val res=org.apache.spark.mllib.regression.LabeledPoint(newLabel,org.apache.spark.mllib.linalg.Vectors.fromML(row.getAs[SparseVector](1)))//.asInstanceOf[org.apache.spark.mllib.regression.LabeledPoint]
       res})
     labeledData
   }
@@ -86,7 +93,7 @@ class RandomForestWithBalance(
   def trainingTree() : RandomForestModel  = {
     // set the training dataset in each traiing
     val data=getTrainingBalancedSet()
-    val labeledPoints: RDD[LabeledPoint]=toRDDLabeledParsed(data)
+    val labeledPoints=toRDDLabeledParsed(data)
     val model = RandomForest.trainClassifier(labeledPoints, 2, cat,
     1, "auto", parameters._1, parameters._2, parameters._3)
     model
@@ -103,7 +110,7 @@ class RandomForestWithBalance(
   }
 
   // get prediction and label from nodes of the trees
-  def predictNodeProb(nodo: Node,features: Vector) : Array[Double] = {
+  def predictNodeProb(nodo: Node,features: org.apache.spark.mllib.linalg.Vector) : Array[Double] = {
     if (nodo.isLeaf) {
       Array(nodo.predict.predict,nodo.predict.prob)
     } else {
@@ -125,7 +132,7 @@ class RandomForestWithBalance(
 
 
 // function to get predictions and probilities of the trees
-  def predictWithProb(tree: DecisionTreeModel,features: Vector) : Array[Double] = {
+  def predictWithProb(tree: DecisionTreeModel,features: org.apache.spark.mllib.linalg.Vector) : Array[Double] = {
     predictNodeProb(tree.topNode, features)
     }
 // average a list taht reprents the output of set o decision trees
@@ -169,22 +176,22 @@ class RandomForestWithBalance(
     (predLabel,proClaseCero,proClaseUno)
   }
   // predcit one sample of a RDD depending of the Startegy
-  def predictOneSampleProb(sample: LabeledPoint,
+  def predictOneSampleProb(sample: org.apache.spark.mllib.regression.LabeledPoint,
       models: scala.collection.mutable.ArrayBuffer[RandomForestModel],
-      estrategia: String="soft") : (Double,Vector,Vector,Double)= {
-    val resultado:  (Double,Vector,Vector,Double)={
+      estrategia: String="soft") : (Double,org.apache.spark.mllib.linalg.Vector,org.apache.spark.mllib.linalg.Vector,Double)= {
+    val resultado:  (Double,org.apache.spark.mllib.linalg.Vector,org.apache.spark.mllib.linalg.Vector,Double)={
     val mapResults=models.map(mod => predictWithProb(mod.trees(0),sample.features))
       if(estrategia.equalsIgnoreCase("soft")) {
         //chek the probilities of each class
         val predAndProb=labelAndProbSoft(mapResults)
         val originalLabel=if(sample.label==1) labelMinor else labelMayor
-        (originalLabel,sample.features,Vectors.dense(predAndProb._2,predAndProb._3), predAndProb._1)
+        (originalLabel,sample.features, org.apache.spark.mllib.linalg.Vectors.dense(predAndProb._2,predAndProb._3), predAndProb._1)
     } else if(estrategia.equalsIgnoreCase("hard")){
         val proClaseUno=mapResults.map(_(0)).filter(_==1).size.toDouble/models.size
         val proClaseCero=mapResults.map(_(0)).filterNot(_==1).size.toDouble/models.size
         val predLabel=if(proClaseUno>proClaseCero) labelMinor else labelMayor
         val originalLabel=if(sample.label==1) labelMinor else labelMayor
-        (originalLabel,sample.features,Vectors.dense(Array(proClaseCero,proClaseUno)), predLabel)
+        (originalLabel,sample.features,org.apache.spark.mllib.linalg.Vectors.dense(Array(proClaseCero,proClaseUno)), predLabel)
     } else {
         println("Value strategy Not Defined!!!!!!!!!!! using soft as default")
         predictOneSampleProb(sample,models, "soft")
@@ -194,18 +201,18 @@ class RandomForestWithBalance(
   }
   // predict the result of one dataframe
   def getPredictions(testData:DataFrame,
-      sc:SparkContext,
+      spark:SparkSession,
       estrategia: String="soft") : DataFrame ={
     //val feaData=feIndx.transform(testData).select("label", "indexedFeatures")
     val feaData=testData.select("label", "indexedFeatures")
-    val labeledPoints: RDD[LabeledPoint]=toRDDLabeledParsed(feaData)
+    val labeledPoints = toRDDLabeledParsed(feaData)
     //broadcast all the trees trained
     val arboles=metaClassifier
-    val treesBroadcasted=sc.broadcast(arboles)
+    val treesBroadcasted=spark.sparkContext.broadcast(arboles)
     val rddPredictions=labeledPoints.map(point=>{
     predictOneSampleProb(point,treesBroadcasted.value,estrategia)})
     //convert to dataframe
-    import sqlContext.implicits._
+    import spark.implicits._
     val dataFramePredcited=rddPredictions.toDF("label", "features","probability","predictedLabel")
     dataFramePredcited
   }

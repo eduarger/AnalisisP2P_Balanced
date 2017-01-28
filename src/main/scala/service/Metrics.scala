@@ -10,8 +10,8 @@ import org.apache.spark.sql.{types, _}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.Row
 import org.apache.spark.ml.feature.{IndexToString, StringIndexer, VectorIndexer, StringIndexerModel, VectorIndexerModel,VectorAssembler}
-import org.apache.spark.mllib.linalg.{SparseVector, DenseVector,Vectors}
-import org.apache.spark.mllib.regression.LabeledPoint
+import org.apache.spark.ml.feature.LabeledPoint
+import org.apache.spark.ml.linalg.{SparseVector, DenseVector,Vectors,Vector}
 
 
 class Metrics(dataSet: DataFrame, labels:Array[Double]) extends Serializable {
